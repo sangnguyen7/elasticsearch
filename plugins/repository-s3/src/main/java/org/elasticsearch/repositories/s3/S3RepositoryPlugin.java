@@ -30,6 +30,7 @@ import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.plugins.ReloadablePlugin;
 import org.elasticsearch.plugins.RepositoryPlugin;
 import org.elasticsearch.repositories.Repository;
+import org.elasticsearch.threadpool.ThreadPool;
 
 import java.io.IOException;
 import java.security.AccessController;
@@ -61,10 +62,10 @@ public class S3RepositoryPlugin extends Plugin implements RepositoryPlugin, Relo
         });
     }
 
-    private final S3Service service;
+    protected final S3Service service;
 
     public S3RepositoryPlugin(final Settings settings) {
-        this(settings, new S3Service(settings));
+        this(settings, new S3Service());
     }
 
     S3RepositoryPlugin(final Settings settings, final S3Service service) {
@@ -77,13 +78,15 @@ public class S3RepositoryPlugin extends Plugin implements RepositoryPlugin, Relo
     // proxy method for testing
     protected S3Repository createRepository(final RepositoryMetaData metadata,
                                             final Settings settings,
-                                            final NamedXContentRegistry registry) throws IOException {
-        return new S3Repository(metadata, settings, registry, service);
+                                            final NamedXContentRegistry registry, final ThreadPool threadPool) {
+        return new S3Repository(metadata, settings, registry, service, threadPool);
     }
 
     @Override
-    public Map<String, Repository.Factory> getRepositories(final Environment env, final NamedXContentRegistry registry) {
-        return Collections.singletonMap(S3Repository.TYPE, (metadata) -> createRepository(metadata, env.settings(), registry));
+    public Map<String, Repository.Factory> getRepositories(final Environment env, final NamedXContentRegistry registry,
+                                                           final ThreadPool threadPool) {
+        return Collections.singletonMap(S3Repository.TYPE,
+            metadata -> createRepository(metadata, env.settings(), registry, threadPool));
     }
 
     @Override

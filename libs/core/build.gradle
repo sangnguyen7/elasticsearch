@@ -1,5 +1,3 @@
-import org.elasticsearch.gradle.precommit.PrecommitTasks
-
 /*
  * Licensed to Elasticsearch under one or more contributor
  * license agreements. See the NOTICE file distributed with
@@ -25,45 +23,6 @@ apply plugin: 'nebula.maven-scm'
 
 archivesBaseName = 'elasticsearch-core'
 
-// we want to keep the JDKs in our IDEs set to JDK 8 until minimum JDK is bumped to 9 so we do not include this source set in our IDEs
-if (!isEclipse && !isIdea) {
-    sourceSets {
-        java9 {
-            java {
-                srcDirs = ['src/main/java9']
-            }
-        }
-    }
-
-    configurations {
-        java9Compile.extendsFrom(compile)
-    }
-
-    dependencies {
-        java9Compile sourceSets.main.output
-    }
-
-    compileJava9Java {
-        sourceCompatibility = 9
-        targetCompatibility = 9
-    }
-
-    /* Enable this when forbiddenapis was updated to 2.6.
-     * See: https://github.com/elastic/elasticsearch/issues/29292
-    forbiddenApisJava9 {
-        targetCompatibility = 9
-    }
-     */
-
-    jar {
-        metaInf {
-            into 'versions/9'
-            from sourceSets.java9.output
-        }
-        manifest.attributes('Multi-Release': 'true')
-    }
-}
-
 publishing {
     publications {
         nebula {
@@ -75,11 +34,7 @@ publishing {
 dependencies {
     testCompile "com.carrotsearch.randomizedtesting:randomizedtesting-runner:${versions.randomizedrunner}"
     testCompile "junit:junit:${versions.junit}"
-    testCompile "org.hamcrest:hamcrest-all:${versions.hamcrest}"
-
-    if (!isEclipse && !isIdea) {
-        java9Compile sourceSets.main.output
-    }
+    testCompile "org.hamcrest:hamcrest:${versions.hamcrest}"
 
     if (isEclipse == false || project.path == ":libs:core-tests") {
         testCompile("org.elasticsearch.test:framework:${version}") {
@@ -91,7 +46,7 @@ dependencies {
 forbiddenApisMain {
     // :libs:core does not depend on server
     // TODO: Need to decide how we want to handle for forbidden signatures with the changes to server
-    signaturesURLs = [PrecommitTasks.getResource('/forbidden/jdk-signatures.txt')]
+    replaceSignatureFiles 'jdk-signatures'
 }
 
 if (isEclipse) {
@@ -107,7 +62,7 @@ if (isEclipse) {
     }
 }
 
-thirdPartyAudit.excludes = [
+thirdPartyAudit.ignoreMissingClasses (
     // from log4j
     'org/osgi/framework/AdaptPermission',
     'org/osgi/framework/AdminPermission',
@@ -118,4 +73,4 @@ thirdPartyAudit.excludes = [
     'org/osgi/framework/SynchronousBundleListener',
     'org/osgi/framework/wiring/BundleWire',
     'org/osgi/framework/wiring/BundleWiring'
-]
+)

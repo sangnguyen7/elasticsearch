@@ -23,7 +23,6 @@ package org.elasticsearch.indices.breaker;
 import org.elasticsearch.common.breaker.ChildMemoryCircuitBreaker;
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.breaker.CircuitBreakingException;
-import org.elasticsearch.common.breaker.MemoryCircuitBreaker;
 import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeUnit;
@@ -32,6 +31,7 @@ import org.elasticsearch.test.ESTestCase;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.hamcrest.Matchers.containsString;
@@ -56,7 +56,7 @@ public class HierarchyCircuitBreakerServiceTests extends ESTestCase {
             }
 
             @Override
-            public void checkParentLimit(String label) throws CircuitBreakingException {
+            public void checkParentLimit(long newBytesReserved, String label) throws CircuitBreakingException {
                 // never trip
             }
         };
@@ -114,12 +114,14 @@ public class HierarchyCircuitBreakerServiceTests extends ESTestCase {
             }
 
             @Override
-            public void checkParentLimit(String label) throws CircuitBreakingException {
+            public void checkParentLimit(long newBytesReserved, String label) throws CircuitBreakingException {
                 // Parent will trip right before regular breaker would trip
-                if (getBreaker(CircuitBreaker.REQUEST).getUsed() > parentLimit) {
+                long requestBreakerUsed = getBreaker(CircuitBreaker.REQUEST).getUsed();
+                if (requestBreakerUsed > parentLimit) {
                     parentTripped.incrementAndGet();
                     logger.info("--> parent tripped");
-                    throw new CircuitBreakingException("parent tripped");
+                    throw new CircuitBreakingException("parent tripped", requestBreakerUsed + newBytesReserved,
+                        parentLimit, CircuitBreaker.Durability.PERMANENT);
                 }
             }
         };
@@ -170,17 +172,18 @@ public class HierarchyCircuitBreakerServiceTests extends ESTestCase {
      */
     public void testBorrowingSiblingBreakerMemory() throws Exception {
         Settings clusterSettings = Settings.builder()
+            .put(HierarchyCircuitBreakerService.USE_REAL_MEMORY_USAGE_SETTING.getKey(), false)
             .put(HierarchyCircuitBreakerService.TOTAL_CIRCUIT_BREAKER_LIMIT_SETTING.getKey(), "200mb")
             .put(HierarchyCircuitBreakerService.REQUEST_CIRCUIT_BREAKER_LIMIT_SETTING.getKey(), "150mb")
             .put(HierarchyCircuitBreakerService.FIELDDATA_CIRCUIT_BREAKER_LIMIT_SETTING.getKey(), "150mb")
             .build();
         try (CircuitBreakerService service = new HierarchyCircuitBreakerService(clusterSettings,
             new ClusterSettings(clusterSettings, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS))) {
-            CircuitBreaker requestCircuitBreaker = service.getBreaker(MemoryCircuitBreaker.REQUEST);
-            CircuitBreaker fieldDataCircuitBreaker = service.getBreaker(MemoryCircuitBreaker.FIELDDATA);
+            CircuitBreaker requestCircuitBreaker = service.getBreaker(CircuitBreaker.REQUEST);
+            CircuitBreaker fieldDataCircuitBreaker = service.getBreaker(CircuitBreaker.FIELDDATA);
 
             assertEquals(new ByteSizeValue(200, ByteSizeUnit.MB).getBytes(),
-                service.stats().getStats(MemoryCircuitBreaker.PARENT).getLimit());
+                service.stats().getStats(CircuitBreaker.PARENT).getLimit());
             assertEquals(new ByteSizeValue(150, ByteSizeUnit.MB).getBytes(), requestCircuitBreaker.getLimit());
             assertEquals(new ByteSizeValue(150, ByteSizeUnit.MB).getBytes(), fieldDataCircuitBreaker.getLimit());
 
@@ -197,6 +200,96 @@ public class HierarchyCircuitBreakerServiceTests extends ESTestCase {
                 .addEstimateBytesAndMaybeBreak(new ByteSizeValue(50, ByteSizeUnit.MB).getBytes(), "should break"));
             assertThat(exception.getMessage(), containsString("[parent] Data too large, data for [should break] would be"));
             assertThat(exception.getMessage(), containsString("which is larger than the limit of [209715200/200mb]"));
+            assertThat(exception.getMessage(),
+                containsString("usages [request=157286400/150mb, fielddata=54001664/51.5mb, in_flight_requests=0/0b, accounting=0/0b]"));
+            assertThat(exception.getDurability(), equalTo(CircuitBreaker.Durability.TRANSIENT));
         }
+    }
+
+    public void testParentBreaksOnRealMemoryUsage() throws Exception {
+        Settings clusterSettings = Settings.builder()
+            .put(HierarchyCircuitBreakerService.USE_REAL_MEMORY_USAGE_SETTING.getKey(), Boolean.TRUE)
+            .put(HierarchyCircuitBreakerService.TOTAL_CIRCUIT_BREAKER_LIMIT_SETTING.getKey(), "200b")
+            .put(HierarchyCircuitBreakerService.REQUEST_CIRCUIT_BREAKER_LIMIT_SETTING.getKey(), "350b")
+            .put(HierarchyCircuitBreakerService.REQUEST_CIRCUIT_BREAKER_OVERHEAD_SETTING.getKey(), 2)
+            .build();
+
+        AtomicLong memoryUsage = new AtomicLong();
+        final CircuitBreakerService service = new HierarchyCircuitBreakerService(clusterSettings,
+            new ClusterSettings(clusterSettings, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS)) {
+            @Override
+            long currentMemoryUsage() {
+                return memoryUsage.get();
+            }
+        };
+        final CircuitBreaker requestBreaker = service.getBreaker(CircuitBreaker.REQUEST);
+
+        // anything below 100 bytes should work (overhead) - current memory usage is zero
+        requestBreaker.addEstimateBytesAndMaybeBreak(randomLongBetween(0, 99), "request");
+        assertEquals(0, requestBreaker.getTrippedCount());
+        // assume memory usage has increased to 150 bytes
+        memoryUsage.set(150);
+
+        // a reservation that bumps memory usage to less than 200 (150 bytes used  + reservation < 200)
+        requestBreaker.addEstimateBytesAndMaybeBreak(randomLongBetween(0, 24), "request");
+        assertEquals(0, requestBreaker.getTrippedCount());
+        memoryUsage.set(181);
+
+        long reservationInBytes = randomLongBetween(10, 50);
+        // anything >= 20 bytes (10 bytes * 2 overhead) reservation breaks the parent but it must be low enough to avoid
+        // breaking the child breaker.
+        CircuitBreakingException exception = expectThrows(CircuitBreakingException.class, () -> requestBreaker
+            .addEstimateBytesAndMaybeBreak(reservationInBytes, "request"));
+        // it was the parent that rejected the reservation
+        assertThat(exception.getMessage(), containsString("[parent] Data too large, data for [request] would be"));
+        assertThat(exception.getMessage(), containsString("which is larger than the limit of [200/200b]"));
+        assertThat(exception.getMessage(),
+            containsString("real usage: [181/181b], new bytes reserved: [" + (reservationInBytes * 2) +
+                "/" + new ByteSizeValue(reservationInBytes * 2) + "]"));
+        assertThat(exception.getDurability(), equalTo(CircuitBreaker.Durability.TRANSIENT));
+        assertEquals(0, requestBreaker.getTrippedCount());
+        assertEquals(1, service.stats().getStats(CircuitBreaker.PARENT).getTrippedCount());
+
+        // lower memory usage again - the same reservation should succeed
+        memoryUsage.set(100);
+        requestBreaker.addEstimateBytesAndMaybeBreak(reservationInBytes, "request");
+        assertEquals(0, requestBreaker.getTrippedCount());
+    }
+
+    public void testTrippedCircuitBreakerDurability() {
+        Settings clusterSettings = Settings.builder()
+            .put(HierarchyCircuitBreakerService.USE_REAL_MEMORY_USAGE_SETTING.getKey(), Boolean.FALSE)
+            .put(HierarchyCircuitBreakerService.TOTAL_CIRCUIT_BREAKER_LIMIT_SETTING.getKey(), "200mb")
+            .put(HierarchyCircuitBreakerService.REQUEST_CIRCUIT_BREAKER_LIMIT_SETTING.getKey(), "150mb")
+            .put(HierarchyCircuitBreakerService.FIELDDATA_CIRCUIT_BREAKER_LIMIT_SETTING.getKey(), "150mb")
+            .build();
+        try (CircuitBreakerService service = new HierarchyCircuitBreakerService(clusterSettings,
+            new ClusterSettings(clusterSettings, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS))) {
+            CircuitBreaker requestCircuitBreaker = service.getBreaker(CircuitBreaker.REQUEST);
+            CircuitBreaker fieldDataCircuitBreaker = service.getBreaker(CircuitBreaker.FIELDDATA);
+
+            CircuitBreaker.Durability expectedDurability;
+            if (randomBoolean()) {
+                fieldDataCircuitBreaker.addEstimateBytesAndMaybeBreak(mb(100), "should not break");
+                requestCircuitBreaker.addEstimateBytesAndMaybeBreak(mb(70), "should not break");
+                expectedDurability = CircuitBreaker.Durability.PERMANENT;
+            } else {
+                fieldDataCircuitBreaker.addEstimateBytesAndMaybeBreak(mb(70), "should not break");
+                requestCircuitBreaker.addEstimateBytesAndMaybeBreak(mb(120), "should not break");
+                expectedDurability = CircuitBreaker.Durability.TRANSIENT;
+            }
+
+            CircuitBreakingException exception = expectThrows(CircuitBreakingException.class, () ->
+                fieldDataCircuitBreaker.addEstimateBytesAndMaybeBreak(mb(40), "should break"));
+
+            assertThat(exception.getMessage(), containsString("[parent] Data too large, data for [should break] would be"));
+            assertThat(exception.getMessage(), containsString("which is larger than the limit of [209715200/200mb]"));
+            assertThat("Expected [" + expectedDurability + "] due to [" + exception.getMessage() + "]",
+                exception.getDurability(), equalTo(expectedDurability));
+        }
+    }
+
+    private long mb(long size) {
+        return new ByteSizeValue(size, ByteSizeUnit.MB).getBytes();
     }
 }

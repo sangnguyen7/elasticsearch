@@ -65,7 +65,6 @@ public class IndexShardRoutingTable implements Iterable<ShardRouting> {
     final List<ShardRouting> activeShards;
     final List<ShardRouting> assignedShards;
     final Set<String> allAllocationIds;
-    static final List<ShardRouting> NO_SHARDS = Collections.emptyList();
     final boolean allShardsStarted;
 
     private volatile Map<AttributesKey, AttributesRoutings> activeShardsByAttributes = emptyMap();
@@ -220,15 +219,6 @@ public class IndexShardRoutingTable implements Iterable<ShardRouting> {
         return this.assignedShards;
     }
 
-    /**
-     * Returns a {@link List} of assigned shards
-     *
-     * @return a {@link List} of shards
-     */
-    public List<ShardRouting> getAssignedShards() {
-        return this.assignedShards;
-    }
-
     public ShardIterator shardsRandomIt() {
         return new PlainShardIterator(shardId, shuffler.shuffle(shards));
     }
@@ -265,7 +255,7 @@ public class IndexShardRoutingTable implements Iterable<ShardRouting> {
 
     /**
      * Returns an iterator over active and initializing shards, ordered by the adaptive replica
-     * selection forumla. Making sure though that its random within the active shards of the same
+     * selection formula. Making sure though that its random within the active shards of the same
      * (or missing) rank, and initializing shards are the last to iterate through.
      */
     public ShardIterator activeInitializingShardsRankedIt(@Nullable ResponseCollectorService collector,
@@ -594,7 +584,8 @@ public class IndexShardRoutingTable implements Iterable<ShardRouting> {
                 ArrayList<ShardRouting> from = new ArrayList<>(allInitializingShards);
                 List<ShardRouting> to = collectAttributeShards(key, nodes, from);
                 shardRoutings = new AttributesRoutings(to, Collections.unmodifiableList(from));
-                initializingShardsByAttributes = MapBuilder.newMapBuilder(initializingShardsByAttributes).put(key, shardRoutings).immutableMap();
+                initializingShardsByAttributes =
+                    MapBuilder.newMapBuilder(initializingShardsByAttributes).put(key, shardRoutings).immutableMap();
             }
         }
         return shardRoutings;
@@ -700,7 +691,7 @@ public class IndexShardRoutingTable implements Iterable<ShardRouting> {
         public IndexShardRoutingTable build() {
             // don't allow more than one shard copy with same id to be allocated to same node
             assert distinctNodes(shards) : "more than one shard with same id assigned to same node (shards: " + shards + ")";
-            return new IndexShardRoutingTable(shardId, Collections.unmodifiableList(new ArrayList<>(shards)));
+            return new IndexShardRoutingTable(shardId, List.copyOf(shards));
         }
 
         static boolean distinctNodes(List<ShardRouting> shards) {

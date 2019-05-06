@@ -88,9 +88,9 @@ public class HasChildQueryBuilderTests extends AbstractQueryTestCase<HasChildQue
     }
 
     @Override
-    protected Settings indexSettings() {
+    protected Settings createTestIndexSettings() {
         return Settings.builder()
-            .put(super.indexSettings())
+            .put(super.createTestIndexSettings())
             .put(IndexMetaData.SETTING_VERSION_CREATED, Version.CURRENT)
             .build();
     }
@@ -141,7 +141,7 @@ public class HasChildQueryBuilderTests extends AbstractQueryTestCase<HasChildQue
      */
     @Override
     protected HasChildQueryBuilder doCreateTestQueryBuilder() {
-        int min = randomIntBetween(0, Integer.MAX_VALUE / 2);
+        int min = randomIntBetween(1, Integer.MAX_VALUE / 2);
         int max = randomIntBetween(min, Integer.MAX_VALUE);
 
         QueryBuilder innerQueryBuilder = new MatchAllQueryBuilder();
@@ -196,10 +196,6 @@ public class HasChildQueryBuilderTests extends AbstractQueryTestCase<HasChildQue
     public void testSerializationBWC() throws IOException {
         for (Version version : VersionUtils.allReleasedVersions()) {
             HasChildQueryBuilder testQuery = createTestQueryBuilder();
-            if (version.before(Version.V_5_2_0) && testQuery.innerHit() != null) {
-                // ignore unmapped for inner_hits has been added on 5.2
-                testQuery.innerHit().setIgnoreUnmapped(false);
-            }
             assertSerialization(testQuery, version);
         }
     }
@@ -219,10 +215,10 @@ public class HasChildQueryBuilderTests extends AbstractQueryTestCase<HasChildQue
         int positiveValue = randomIntBetween(0, Integer.MAX_VALUE);
         HasChildQueryBuilder foo = hasChildQuery("foo", query, ScoreMode.None); // all good
         e = expectThrows(IllegalArgumentException.class, () -> foo.minMaxChildren(randomIntBetween(Integer.MIN_VALUE, -1), positiveValue));
-        assertEquals("[has_child] requires non-negative 'min_children' field", e.getMessage());
+        assertEquals("[has_child] requires positive 'min_children' field", e.getMessage());
 
         e = expectThrows(IllegalArgumentException.class, () -> foo.minMaxChildren(positiveValue, randomIntBetween(Integer.MIN_VALUE, -1)));
-        assertEquals("[has_child] requires non-negative 'max_children' field", e.getMessage());
+        assertEquals("[has_child] requires positive 'max_children' field", e.getMessage());
 
         e = expectThrows(IllegalArgumentException.class, () -> foo.minMaxChildren(positiveValue, positiveValue - 10));
         assertEquals("[has_child] 'max_children' is less than 'min_children'", e.getMessage());
@@ -256,6 +252,7 @@ public class HasChildQueryBuilderTests extends AbstractQueryTestCase<HasChildQue
                 "      \"from\" : 0,\n" +
                 "      \"size\" : 100,\n" +
                 "      \"version\" : false,\n" +
+                "      \"seq_no_primary_term\" : false,\n" +
                 "      \"explain\" : false,\n" +
                 "      \"track_scores\" : false,\n" +
                 "      \"sort\" : [ {\n" +
@@ -369,5 +366,13 @@ public class HasChildQueryBuilderTests extends AbstractQueryTestCase<HasChildQue
         Query query = queryBuilder.rewrite(queryShardContext).toQuery(queryShardContext);
         assertThat(query, notNullValue());
         assertThat(query, instanceOf(MatchNoDocsQuery.class));
+    }
+
+    public void testExtractInnerHitBuildersWithDuplicate() {
+        final HasChildQueryBuilder queryBuilder
+            = new HasChildQueryBuilder(CHILD_DOC, new WrapperQueryBuilder(new MatchAllQueryBuilder().toString()), ScoreMode.None);
+        queryBuilder.innerHit(new InnerHitBuilder("some_name"));
+        IllegalArgumentException e = expectThrows(IllegalArgumentException.class,
+            () -> InnerHitContextBuilder.extractInnerHits(queryBuilder, Collections.singletonMap("some_name", null)));
     }
 }

@@ -10,10 +10,10 @@ import org.elasticsearch.action.support.ActionFilters;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.license.License;
 import org.elasticsearch.license.LicenseService;
-import org.elasticsearch.protocol.license.LicenseStatus;
 import org.elasticsearch.protocol.xpack.XPackInfoRequest;
 import org.elasticsearch.protocol.xpack.XPackInfoResponse;
 import org.elasticsearch.protocol.xpack.XPackInfoResponse.FeatureSetsInfo.FeatureSet;
+import org.elasticsearch.protocol.xpack.license.LicenseStatus;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.transport.Transport;
@@ -57,8 +57,8 @@ public class TransportXPackInfoActionTests extends ESTestCase {
 
         TransportService transportService = new TransportService(Settings.EMPTY, mock(Transport.class), null,
             TransportService.NOOP_TRANSPORT_INTERCEPTOR, x -> null, null, Collections.emptySet());
-        TransportXPackInfoAction action = new TransportXPackInfoAction(Settings.EMPTY, transportService,
-            mock(ActionFilters.class), licenseService, featureSets);
+        TransportXPackInfoAction action = new TransportXPackInfoAction(transportService, mock(ActionFilters.class),
+            licenseService, featureSets);
 
         License license = mock(License.class);
         long expiryDate = randomLong();

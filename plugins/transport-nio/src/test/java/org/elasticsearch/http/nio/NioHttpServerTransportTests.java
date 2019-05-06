@@ -37,8 +37,10 @@ import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.network.NetworkService;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.settings.SettingsException;
 import org.elasticsearch.common.transport.TransportAddress;
 import org.elasticsearch.common.unit.ByteSizeValue;
+import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.MockBigArrays;
 import org.elasticsearch.common.util.MockPageCacheRecycler;
 import org.elasticsearch.common.util.concurrent.ThreadContext;
@@ -48,12 +50,14 @@ import org.elasticsearch.http.HttpTransportSettings;
 import org.elasticsearch.http.NullDispatcher;
 import org.elasticsearch.http.nio.cors.NioCorsConfig;
 import org.elasticsearch.indices.breaker.NoneCircuitBreakerService;
+import org.elasticsearch.nio.NioSocketChannel;
 import org.elasticsearch.rest.BytesRestResponse;
 import org.elasticsearch.rest.RestChannel;
 import org.elasticsearch.rest.RestRequest;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.threadpool.TestThreadPool;
 import org.elasticsearch.threadpool.ThreadPool;
+import org.elasticsearch.transport.nio.NioGroupFactory;
 import org.junit.After;
 import org.junit.Before;
 
@@ -64,7 +68,10 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.PatternSyntaxException;
 import java.util.stream.Collectors;
 
 import static org.elasticsearch.http.HttpTransportSettings.SETTING_CORS_ALLOW_CREDENTIALS;
@@ -139,6 +146,17 @@ public class NioHttpServerTransportTests extends ESTestCase {
         assertFalse(corsConfig.isCredentialsAllowed());
     }
 
+    public void testCorsConfigWithBadRegex() {
+        final Settings settings = Settings.builder()
+            .put(SETTING_CORS_ENABLED.getKey(), true)
+            .put(SETTING_CORS_ALLOW_ORIGIN.getKey(), "/[*/")
+            .put(SETTING_CORS_ALLOW_CREDENTIALS.getKey(), true)
+            .build();
+        SettingsException e = expectThrows(SettingsException.class, () -> NioHttpServerTransport.buildCorsConfig(settings));
+        assertThat(e.getMessage(), containsString("Bad regex in [http.cors.allow-origin]: [/[*/]"));
+        assertThat(e.getCause(), instanceOf(PatternSyntaxException.class));
+    }
+
     /**
      * Test that {@link NioHttpServerTransport} supports the "Expect: 100-continue" HTTP header
      * @throws InterruptedException if the client communication with the server is interrupted
@@ -189,23 +207,32 @@ public class NioHttpServerTransportTests extends ESTestCase {
             }
         };
         try (NioHttpServerTransport transport = new NioHttpServerTransport(settings, networkService, bigArrays, pageRecycler, threadPool,
-            xContentRegistry(), dispatcher)) {
+            xContentRegistry(), dispatcher, new NioGroupFactory(settings, logger))) {
             transport.start();
             final TransportAddress remoteAddress = randomFrom(transport.boundAddress().boundAddresses());
-            try (Netty4HttpClient client = new Netty4HttpClient()) {
+            try (NioHttpClient client = new NioHttpClient()) {
                 final FullHttpRequest request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.POST, "/");
                 request.headers().set(HttpHeaderNames.EXPECT, expectation);
                 HttpUtil.setContentLength(request, contentLength);
 
                 final FullHttpResponse response = client.post(remoteAddress.address(), request);
-                assertThat(response.status(), equalTo(expectedStatus));
-                if (expectedStatus.equals(HttpResponseStatus.CONTINUE)) {
-                    final FullHttpRequest continuationRequest =
-                        new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.POST, "/", Unpooled.EMPTY_BUFFER);
-                    final FullHttpResponse continuationResponse = client.post(remoteAddress.address(), continuationRequest);
-
-                    assertThat(continuationResponse.status(), is(HttpResponseStatus.OK));
-                    assertThat(new String(ByteBufUtil.getBytes(continuationResponse.content()), StandardCharsets.UTF_8), is("done"));
+                try {
+                    assertThat(response.status(), equalTo(expectedStatus));
+                    if (expectedStatus.equals(HttpResponseStatus.CONTINUE)) {
+                        final FullHttpRequest continuationRequest =
+                            new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.POST, "/", Unpooled.EMPTY_BUFFER);
+                        final FullHttpResponse continuationResponse = client.post(remoteAddress.address(), continuationRequest);
+                        try {
+                            assertThat(continuationResponse.status(), is(HttpResponseStatus.OK));
+                            assertThat(
+                                new String(ByteBufUtil.getBytes(continuationResponse.content()), StandardCharsets.UTF_8), is("done")
+                            );
+                        } finally {
+                            continuationResponse.release();
+                        }
+                    }
+                } finally {
+                    response.release();
                 }
             }
         }
@@ -213,12 +240,12 @@ public class NioHttpServerTransportTests extends ESTestCase {
 
     public void testBindUnavailableAddress() {
         try (NioHttpServerTransport transport = new NioHttpServerTransport(Settings.EMPTY, networkService, bigArrays, pageRecycler,
-            threadPool, xContentRegistry(), new NullDispatcher())) {
+            threadPool, xContentRegistry(), new NullDispatcher(), new NioGroupFactory(Settings.EMPTY, logger))) {
             transport.start();
             TransportAddress remoteAddress = randomFrom(transport.boundAddress().boundAddresses());
             Settings settings = Settings.builder().put("http.port", remoteAddress.getPort()).build();
             try (NioHttpServerTransport otherTransport = new NioHttpServerTransport(settings, networkService, bigArrays, pageRecycler,
-                threadPool, xContentRegistry(), new NullDispatcher())) {
+                threadPool, xContentRegistry(), new NullDispatcher(), new NioGroupFactory(Settings.EMPTY, logger))) {
                 BindHttpException bindHttpException = expectThrows(BindHttpException.class, () -> otherTransport.start());
                 assertEquals("Failed to bind to [" + remoteAddress.getPort() + "]", bindHttpException.getMessage());
             }
@@ -262,72 +289,71 @@ public class NioHttpServerTransportTests extends ESTestCase {
         }
 
         try (NioHttpServerTransport transport = new NioHttpServerTransport(settings, networkService, bigArrays, pageRecycler,
-            threadPool, xContentRegistry(), dispatcher)) {
+            threadPool, xContentRegistry(), dispatcher, new NioGroupFactory(settings, logger))) {
             transport.start();
             final TransportAddress remoteAddress = randomFrom(transport.boundAddress().boundAddresses());
 
-            try (Netty4HttpClient client = new Netty4HttpClient()) {
+            try (NioHttpClient client = new NioHttpClient()) {
                 final String url = "/" + new String(new byte[maxInitialLineLength], Charset.forName("UTF-8"));
                 final FullHttpRequest request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, url);
 
                 final FullHttpResponse response = client.post(remoteAddress.address(), request);
-                assertThat(response.status(), equalTo(HttpResponseStatus.BAD_REQUEST));
-                assertThat(
-                    new String(response.content().array(), Charset.forName("UTF-8")),
-                    containsString("you sent a bad request and you should feel bad"));
+                try {
+                    assertThat(response.status(), equalTo(HttpResponseStatus.BAD_REQUEST));
+                    assertThat(
+                        new String(response.content().array(), Charset.forName("UTF-8")),
+                        containsString("you sent a bad request and you should feel bad"));
+                } finally {
+                    response.release();
+                }
             }
         }
 
         assertNotNull(causeReference.get());
         assertThat(causeReference.get(), instanceOf(TooLongFrameException.class));
     }
-    
-//    public void testReadTimeout() throws Exception {
-//        final HttpServerTransport.Dispatcher dispatcher = new HttpServerTransport.Dispatcher() {
-//
-//            @Override
-//            public void dispatchRequest(final RestRequest request, final RestChannel channel, final ThreadContext threadContext) {
-//                throw new AssertionError("Should not have received a dispatched request");
-//            }
-//
-//            @Override
-//            public void dispatchBadRequest(final RestRequest request,
-//                                           final RestChannel channel,
-//                                           final ThreadContext threadContext,
-//                                           final Throwable cause) {
-//                throw new AssertionError("Should not have received a dispatched request");
-//            }
-//
-//        };
-//
-//        Settings settings = Settings.builder()
-//            .put(HttpTransportSettings.SETTING_HTTP_READ_TIMEOUT.getKey(), new TimeValue(randomIntBetween(100, 300)))
-//            .build();
-//
-//
-//        NioEventLoopGroup group = new NioEventLoopGroup();
-//        try (NioHttpServerTransport transport =
-//                 new NioHttpServerTransport(settings, networkService, bigArrays, threadPool, xContentRegistry(), dispatcher)) {
-//            transport.start();
-//            final TransportAddress remoteAddress = randomFrom(transport.boundAddress().boundAddresses());
-//
-//            AtomicBoolean channelClosed = new AtomicBoolean(false);
-//
-//            Bootstrap clientBootstrap = new Bootstrap().channel(NioSocketChannel.class).handler(new ChannelInitializer<SocketChannel>() {
-//
-//                @Override
-//                protected void initChannel(SocketChannel ch) {
-//                    ch.pipeline().addLast(new ChannelHandlerAdapter() {});
-//
-//                }
-//            }).group(group);
-//            ChannelFuture connect = clientBootstrap.connect(remoteAddress.address());
-//            connect.channel().closeFuture().addListener(future -> channelClosed.set(true));
-//
-//            assertBusy(() -> assertTrue("Channel should be closed due to read timeout", channelClosed.get()), 5, TimeUnit.SECONDS);
-//
-//        } finally {
-//            group.shutdownGracefully().await();
-//        }
-//    }
+
+    public void testReadTimeout() throws Exception {
+        final HttpServerTransport.Dispatcher dispatcher = new HttpServerTransport.Dispatcher() {
+
+            @Override
+            public void dispatchRequest(final RestRequest request, final RestChannel channel, final ThreadContext threadContext) {
+                throw new AssertionError("Should not have received a dispatched request");
+            }
+
+            @Override
+            public void dispatchBadRequest(final RestRequest request,
+                                           final RestChannel channel,
+                                           final ThreadContext threadContext,
+                                           final Throwable cause) {
+                throw new AssertionError("Should not have received a dispatched request");
+            }
+
+        };
+
+        Settings settings = Settings.builder()
+            .put(HttpTransportSettings.SETTING_HTTP_READ_TIMEOUT.getKey(), new TimeValue(randomIntBetween(100, 300)))
+            .build();
+
+
+        try (NioHttpServerTransport transport = new NioHttpServerTransport(settings, networkService, bigArrays, pageRecycler,
+            threadPool, xContentRegistry(), dispatcher, new NioGroupFactory(settings, logger))) {
+            transport.start();
+            final TransportAddress remoteAddress = randomFrom(transport.boundAddress().boundAddresses());
+
+            try (NioHttpClient client = new NioHttpClient()) {
+                NioSocketChannel channel = null;
+                try {
+                    CountDownLatch channelClosedLatch = new CountDownLatch(1);
+                    channel = client.connect(remoteAddress.address());
+                    channel.addCloseListener((r, t) -> channelClosedLatch.countDown());
+                    assertTrue("Channel should be closed due to read timeout", channelClosedLatch.await(1, TimeUnit.MINUTES));
+                } finally {
+                    if (channel != null) {
+                        channel.close();
+                    }
+                }
+            }
+        }
+    }
 }

@@ -19,6 +19,7 @@
 
 package org.elasticsearch.action.admin.indices.flush;
 
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.support.ActionFilters;
 import org.elasticsearch.action.support.replication.ReplicationResponse;
 import org.elasticsearch.action.support.replication.TransportReplicationAction;
@@ -32,7 +33,8 @@ import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 
-public class TransportShardFlushAction extends TransportReplicationAction<ShardFlushRequest, ShardFlushRequest, ReplicationResponse> {
+public class TransportShardFlushAction
+        extends TransportReplicationAction<ShardFlushRequest, ShardFlushRequest, ReplicationResponse> {
 
     public static final String NAME = FlushAction.NAME + "[s]";
 
@@ -50,11 +52,13 @@ public class TransportShardFlushAction extends TransportReplicationAction<ShardF
     }
 
     @Override
-    protected PrimaryResult<ShardFlushRequest, ReplicationResponse> shardOperationOnPrimary(ShardFlushRequest shardRequest,
-            IndexShard primary) {
-        primary.flush(shardRequest.getRequest());
-        logger.trace("{} flush request executed on primary", primary.shardId());
-        return new PrimaryResult<ShardFlushRequest, ReplicationResponse>(shardRequest, new ReplicationResponse());
+    protected void shardOperationOnPrimary(ShardFlushRequest shardRequest, IndexShard primary,
+            ActionListener<PrimaryResult<ShardFlushRequest, ReplicationResponse>> listener) {
+        ActionListener.completeWith(listener, () -> {
+            primary.flush(shardRequest.getRequest());
+            logger.trace("{} flush request executed on primary", primary.shardId());
+            return new PrimaryResult<>(shardRequest, new ReplicationResponse());
+        });
     }
 
     @Override

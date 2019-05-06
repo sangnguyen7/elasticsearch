@@ -102,13 +102,16 @@ public class FieldSortBuilderTests extends AbstractSortTestCase<FieldSortBuilder
                 }
             }
         }
+        if (randomBoolean()) {
+            builder.setNumericType(randomFrom(random(), "long", "double", "date", "date_nanos"));
+        }
         return builder;
     }
 
     @Override
     protected FieldSortBuilder mutate(FieldSortBuilder original) throws IOException {
         FieldSortBuilder mutated = new FieldSortBuilder(original);
-        int parameter = randomIntBetween(0, 4);
+        int parameter = randomIntBetween(0, 5);
         switch (parameter) {
         case 0:
             if (original.getNestedPath() == null && original.getNestedFilter() == null) {
@@ -136,6 +139,10 @@ public class FieldSortBuilderTests extends AbstractSortTestCase<FieldSortBuilder
         case 4:
             mutated.order(randomValueOtherThan(original.order(), () -> randomFrom(SortOrder.values())));
             break;
+        case 5:
+            mutated.setNumericType(randomValueOtherThan(original.getNumericType(),
+                () -> randomFrom("long", "double", "date", "date_nanos")));
+            break;
         default:
             throw new IllegalStateException("Unsupported mutation.");
         }
@@ -159,7 +166,7 @@ public class FieldSortBuilderTests extends AbstractSortTestCase<FieldSortBuilder
     }
 
     /**
-     * Test that missing values get transfered correctly to the SortField
+     * Test that missing values get transferred correctly to the SortField
      */
     public void testBuildSortFieldMissingValue() throws IOException {
         QueryShardContext shardContextMock = createMockShardContext();
@@ -190,7 +197,7 @@ public class FieldSortBuilderTests extends AbstractSortTestCase<FieldSortBuilder
     }
 
     /**
-     * Test that the sort builder order gets transfered correctly to the SortField
+     * Test that the sort builder order gets transferred correctly to the SortField
      */
     public void testBuildSortFieldOrder() throws IOException {
         QueryShardContext shardContextMock = createMockShardContext();
@@ -214,7 +221,7 @@ public class FieldSortBuilderTests extends AbstractSortTestCase<FieldSortBuilder
     }
 
     /**
-     * Test that the sort builder mode gets transfered correctly to the SortField
+     * Test that the sort builder mode gets transferred correctly to the SortField
      */
     public void testMultiValueMode() throws IOException {
         QueryShardContext shardContextMock = createMockShardContext();
@@ -249,7 +256,7 @@ public class FieldSortBuilderTests extends AbstractSortTestCase<FieldSortBuilder
         comparatorSource = (XFieldComparatorSource) sortField.getComparatorSource();
         assertEquals(MultiValueMode.MEDIAN, comparatorSource.sortMode());
 
-        // sort mode should also be set by build() implicitely to MIN or MAX if not set explicitely on builder
+        // sort mode should also be set by build() implicitly to MIN or MAX if not set explicitly on builder
         sortBuilder = new FieldSortBuilder("value");
         sortField = sortBuilder.build(shardContextMock).field;
         assertThat(sortField, instanceOf(SortedNumericSortField.class));

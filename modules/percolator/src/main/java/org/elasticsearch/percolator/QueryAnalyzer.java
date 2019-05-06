@@ -24,6 +24,7 @@ import org.apache.lucene.index.Term;
 import org.apache.lucene.queries.BlendedTermQuery;
 import org.apache.lucene.queries.CommonTermsQuery;
 import org.apache.lucene.search.BooleanClause;
+import org.apache.lucene.search.BooleanClause.Occur;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.BoostQuery;
 import org.apache.lucene.search.ConstantScoreQuery;
@@ -38,7 +39,6 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.search.SynonymQuery;
 import org.apache.lucene.search.TermInSetQuery;
 import org.apache.lucene.search.TermQuery;
-import org.apache.lucene.search.BooleanClause.Occur;
 import org.apache.lucene.search.spans.SpanFirstQuery;
 import org.apache.lucene.search.spans.SpanNearQuery;
 import org.apache.lucene.search.spans.SpanNotQuery;
@@ -55,7 +55,6 @@ import org.elasticsearch.index.search.ESToParentBlockJoinQuery;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -64,38 +63,34 @@ import java.util.Set;
 import java.util.function.BiFunction;
 import java.util.stream.Collectors;
 
+import static java.util.Map.entry;
 import static java.util.stream.Collectors.toSet;
 
 final class QueryAnalyzer {
 
-    private static final Map<Class<? extends Query>, BiFunction<Query, Version, Result>> queryProcessors;
-
-    static {
-        Map<Class<? extends Query>, BiFunction<Query, Version, Result>> map = new HashMap<>();
-        map.put(MatchNoDocsQuery.class, matchNoDocsQuery());
-        map.put(MatchAllDocsQuery.class, matchAllDocsQuery());
-        map.put(ConstantScoreQuery.class, constantScoreQuery());
-        map.put(BoostQuery.class, boostQuery());
-        map.put(TermQuery.class, termQuery());
-        map.put(TermInSetQuery.class, termInSetQuery());
-        map.put(CommonTermsQuery.class, commonTermsQuery());
-        map.put(BlendedTermQuery.class, blendedTermQuery());
-        map.put(PhraseQuery.class, phraseQuery());
-        map.put(MultiPhraseQuery.class, multiPhraseQuery());
-        map.put(SpanTermQuery.class, spanTermQuery());
-        map.put(SpanNearQuery.class, spanNearQuery());
-        map.put(SpanOrQuery.class, spanOrQuery());
-        map.put(SpanFirstQuery.class, spanFirstQuery());
-        map.put(SpanNotQuery.class, spanNotQuery());
-        map.put(BooleanQuery.class, booleanQuery());
-        map.put(DisjunctionMaxQuery.class, disjunctionMaxQuery());
-        map.put(SynonymQuery.class, synonymQuery());
-        map.put(FunctionScoreQuery.class, functionScoreQuery());
-        map.put(PointRangeQuery.class, pointRangeQuery());
-        map.put(IndexOrDocValuesQuery.class, indexOrDocValuesQuery());
-        map.put(ESToParentBlockJoinQuery.class, toParentBlockJoinQuery());
-        queryProcessors = Collections.unmodifiableMap(map);
-    }
+    private static final Map<Class<? extends Query>, BiFunction<Query, Version, Result>> QUERY_PROCESSORS = Map.ofEntries(
+        entry(MatchNoDocsQuery.class, matchNoDocsQuery()),
+        entry(MatchAllDocsQuery.class, matchAllDocsQuery()),
+        entry(ConstantScoreQuery.class, constantScoreQuery()),
+        entry(BoostQuery.class, boostQuery()),
+        entry(TermQuery.class, termQuery()),
+        entry(TermInSetQuery.class, termInSetQuery()),
+        entry(CommonTermsQuery.class, commonTermsQuery()),
+        entry(BlendedTermQuery.class, blendedTermQuery()),
+        entry(PhraseQuery.class, phraseQuery()),
+        entry(MultiPhraseQuery.class, multiPhraseQuery()),
+        entry(SpanTermQuery.class, spanTermQuery()),
+        entry(SpanNearQuery.class, spanNearQuery()),
+        entry(SpanOrQuery.class, spanOrQuery()),
+        entry(SpanFirstQuery.class, spanFirstQuery()),
+        entry(SpanNotQuery.class, spanNotQuery()),
+        entry(BooleanQuery.class, booleanQuery()),
+        entry(DisjunctionMaxQuery.class, disjunctionMaxQuery()),
+        entry(SynonymQuery.class, synonymQuery()),
+        entry(FunctionScoreQuery.class, functionScoreQuery()),
+        entry(PointRangeQuery.class, pointRangeQuery()),
+        entry(IndexOrDocValuesQuery.class, indexOrDocValuesQuery()),
+        entry(ESToParentBlockJoinQuery.class, toParentBlockJoinQuery()));
 
     private QueryAnalyzer() {
     }
@@ -130,11 +125,11 @@ final class QueryAnalyzer {
     static Result analyze(Query query, Version indexVersion) {
         Class<?> queryClass = query.getClass();
         if (queryClass.isAnonymousClass()) {
-            // Sometimes queries have anonymous classes in that case we need the direct super class.
-            // (for example blended term query)
+            // sometimes queries have anonymous classes in that case we need the direct super class (e.g., blended term query)
             queryClass = queryClass.getSuperclass();
         }
-        BiFunction<Query, Version, Result> queryProcessor = queryProcessors.get(queryClass);
+        assert Query.class.isAssignableFrom(queryClass) : query.getClass();
+        BiFunction<Query, Version, Result> queryProcessor = QUERY_PROCESSORS.get(queryClass);
         if (queryProcessor != null) {
             return queryProcessor.apply(query, indexVersion);
         } else {
@@ -489,43 +484,51 @@ final class QueryAnalyzer {
                     return subResult;
                 }
             }
-                        int msm =  0;
-                        boolean verified = true;
-                        boolean matchAllDocs = true;
-                        boolean hasDuplicateTerms = false;Set<QueryExtraction> extractions = new HashSet<>();
-                        Set<String> seenRangeFields = new HashSet<>();
-                        for (Result result : conjunctions) {
-                            // In case that there are duplicate query extractions we need to be careful with incrementing msm,
-                            // because that could lead to valid matches not becoming candidate matches:
-                            // query: (field:val1 AND field:val2) AND (field:val2 AND field:val3)
-                            // doc:   field: val1 val2 val3
-                            // So lets be protective and decrease the msm:
-                            int resultMsm = result.minimumShouldMatch;
-                            for (QueryExtraction queryExtraction : result.extractions) {
-                                if (queryExtraction.range != null) {
-                                    // In case of range queries each extraction does not simply increment the minimum_should_match
-                                    // for that percolator query like for a term based extraction, so that can lead to more false
-                                    // positives for percolator queries with range queries than term based queries.
-                                    // The is because the way number fields are extracted from the document to be percolated.
-                                    // Per field a single range is extracted and if a percolator query has two or more range queries
-                                    // on the same field, then the minimum should match can be higher than clauses in the CoveringQuery.
-                                    // Therefore right now the minimum should match is incremented once per number field when processing
-                                    // the percolator query at index time.
-                                    if (seenRangeFields.add(queryExtraction.range.fieldName)) {
-                                        resultMsm = 1;
-                                    } else {
-                                        resultMsm = 0;
-                                    }
-                                }
+            int msm = 0;
+            boolean verified = true;
+            boolean matchAllDocs = true;
+            boolean hasDuplicateTerms = false;
+            Set<QueryExtraction> extractions = new HashSet<>();
+            Set<String> seenRangeFields = new HashSet<>();
+            for (Result result : conjunctions) {
+                // In case that there are duplicate query extractions we need to be careful with
+                // incrementing msm,
+                // because that could lead to valid matches not becoming candidate matches:
+                // query: (field:val1 AND field:val2) AND (field:val2 AND field:val3)
+                // doc: field: val1 val2 val3
+                // So lets be protective and decrease the msm:
+                int resultMsm = result.minimumShouldMatch;
+                for (QueryExtraction queryExtraction : result.extractions) {
+                    if (queryExtraction.range != null) {
+                        // In case of range queries each extraction does not simply increment the
+                        // minimum_should_match
+                        // for that percolator query like for a term based extraction, so that can lead
+                        // to more false
+                        // positives for percolator queries with range queries than term based queries.
+                        // The is because the way number fields are extracted from the document to be
+                        // percolated.
+                        // Per field a single range is extracted and if a percolator query has two or
+                        // more range queries
+                        // on the same field, then the minimum should match can be higher than clauses
+                        // in the CoveringQuery.
+                        // Therefore right now the minimum should match is incremented once per number
+                        // field when processing
+                        // the percolator query at index time.
+                        if (seenRangeFields.add(queryExtraction.range.fieldName)) {
+                            resultMsm = 1;
+                        } else {
+                            resultMsm = 0;
+                        }
+                    }
 
-                                if (extractions.contains(queryExtraction)) {
+                    if (extractions.contains(queryExtraction)) {
 
-                                    resultMsm = 0;
-                                    verified = false;
-                                    break;
-                                }
-                            }
-                            msm += resultMsm;
+                        resultMsm = 0;
+                        verified = false;
+                        break;
+                    }
+                }
+                msm += resultMsm;
 
                 if (result.verified == false
                         // If some inner extractions are optional, the result can't be verified

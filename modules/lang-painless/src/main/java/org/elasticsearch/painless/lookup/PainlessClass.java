@@ -21,64 +21,39 @@ package org.elasticsearch.painless.lookup;
 
 import java.lang.invoke.MethodHandle;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 
 public final class PainlessClass {
-    public final String name;
-    public final Class<?> clazz;
-    public final org.objectweb.asm.Type type;
 
-    public final Map<PainlessMethodKey, PainlessMethod> constructors;
-    public final Map<PainlessMethodKey, PainlessMethod> staticMethods;
-    public final Map<PainlessMethodKey, PainlessMethod> methods;
+    public final Map<String, PainlessConstructor> constructors;
+    public final Map<String, PainlessMethod> staticMethods;
+    public final Map<String, PainlessMethod> methods;
+    public final Map<String, PainlessField> staticFields;
+    public final Map<String, PainlessField> fields;
+    public final PainlessMethod functionalInterfaceMethod;
 
-    public final Map<String, PainlessField> staticMembers;
-    public final Map<String, PainlessField> members;
+    public final Map<String, PainlessMethod> runtimeMethods;
+    public final Map<String, MethodHandle> getterMethodHandles;
+    public final Map<String, MethodHandle> setterMethodHandles;
 
-    public final Map<String, MethodHandle> getters;
-    public final Map<String, MethodHandle> setters;
+    PainlessClass(Map<String, PainlessConstructor> constructors,
+            Map<String, PainlessMethod> staticMethods, Map<String, PainlessMethod> methods,
+            Map<String, PainlessField> staticFields, Map<String, PainlessField> fields,
+            PainlessMethod functionalInterfaceMethod,
+            Map<String, PainlessMethod> runtimeMethods,
+            Map<String, MethodHandle> getterMethodHandles, Map<String, MethodHandle> setterMethodHandles) {
 
-    public final PainlessMethod functionalMethod;
+        this.constructors = Collections.unmodifiableMap(constructors);
+        this.staticMethods = Collections.unmodifiableMap(staticMethods);
+        this.methods = Collections.unmodifiableMap(methods);
+        this.staticFields = Collections.unmodifiableMap(staticFields);
+        this.fields = Collections.unmodifiableMap(fields);
+        this.functionalInterfaceMethod = functionalInterfaceMethod;
 
-    PainlessClass(String name, Class<?> clazz, org.objectweb.asm.Type type) {
-        this.name = name;
-        this.clazz = clazz;
-        this.type = type;
-
-        constructors = new HashMap<>();
-        staticMethods = new HashMap<>();
-        methods = new HashMap<>();
-
-        staticMembers = new HashMap<>();
-        members = new HashMap<>();
-
-        getters = new HashMap<>();
-        setters = new HashMap<>();
-
-        functionalMethod = null;
-    }
-
-    private PainlessClass(PainlessClass struct, PainlessMethod functionalMethod) {
-        name = struct.name;
-        clazz = struct.clazz;
-        type = struct.type;
-
-        constructors = Collections.unmodifiableMap(struct.constructors);
-        staticMethods = Collections.unmodifiableMap(struct.staticMethods);
-        methods = Collections.unmodifiableMap(struct.methods);
-
-        staticMembers = Collections.unmodifiableMap(struct.staticMembers);
-        members = Collections.unmodifiableMap(struct.members);
-
-        getters = Collections.unmodifiableMap(struct.getters);
-        setters = Collections.unmodifiableMap(struct.setters);
-
-        this.functionalMethod = functionalMethod;
-    }
-
-    public PainlessClass freeze(PainlessMethod functionalMethod) {
-        return new PainlessClass(this, functionalMethod);
+        this.getterMethodHandles = Collections.unmodifiableMap(getterMethodHandles);
+        this.setterMethodHandles = Collections.unmodifiableMap(setterMethodHandles);
+        this.runtimeMethods = Collections.unmodifiableMap(runtimeMethods);
     }
 
     @Override
@@ -91,13 +66,18 @@ public final class PainlessClass {
             return false;
         }
 
-        PainlessClass struct = (PainlessClass)object;
+        PainlessClass that = (PainlessClass)object;
 
-        return name.equals(struct.name);
+        return Objects.equals(constructors, that.constructors) &&
+                Objects.equals(staticMethods, that.staticMethods) &&
+                Objects.equals(methods, that.methods) &&
+                Objects.equals(staticFields, that.staticFields) &&
+                Objects.equals(fields, that.fields) &&
+                Objects.equals(functionalInterfaceMethod, that.functionalInterfaceMethod);
     }
 
     @Override
     public int hashCode() {
-        return name.hashCode();
+        return Objects.hash(constructors, staticMethods, methods, staticFields, fields, functionalInterfaceMethod);
     }
 }

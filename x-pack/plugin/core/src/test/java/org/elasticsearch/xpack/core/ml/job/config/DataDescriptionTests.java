@@ -17,6 +17,8 @@ import org.elasticsearch.test.AbstractSerializingTestCase;
 import org.elasticsearch.xpack.core.ml.job.config.DataDescription.DataFormat;
 import org.elasticsearch.xpack.core.ml.job.messages.Messages;
 
+import java.time.DateTimeException;
+
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.instanceOf;
@@ -51,8 +53,7 @@ public class DataDescriptionTests extends AbstractSerializingTestCase<DataDescri
         description.setTimeFormat("epoch");
         description.setTimeFormat("epoch_ms");
         description.setTimeFormat("yyyy-MM-dd HH");
-        String goodFormat = "yyyy.MM.dd G 'at' HH:mm:ss z";
-        description.setTimeFormat(goodFormat);
+        description.setTimeFormat("yyyy.MM.dd G 'at' HH:mm:ss z");
     }
 
     public void testVerify_GivenInValidFormat() {
@@ -68,6 +69,10 @@ public class DataDescriptionTests extends AbstractSerializingTestCase<DataDescri
         e = expectThrows(ElasticsearchException.class, () -> description.setTimeFormat("y-M-dd"));
         assertEquals(Messages.getMessage(Messages.JOB_CONFIG_INVALID_TIMEFORMAT, "y-M-dd"), e.getMessage());
         expectThrows(ElasticsearchException.class, () -> description.setTimeFormat("YYY-mm-UU hh:mm:ssY"));
+
+        Throwable cause = e.getCause();
+        assertNotNull(cause);
+        assertThat(cause, instanceOf(DateTimeException.class));
     }
 
     public void testTransform_GivenDelimitedAndEpoch() {
@@ -202,7 +207,7 @@ public class DataDescriptionTests extends AbstractSerializingTestCase<DataDescri
         XContentParser parser = JsonXContent.jsonXContent
                 .createParser(NamedXContentRegistry.EMPTY, DeprecationHandler.THROW_UNSUPPORTED_OPERATION, json.streamInput());
         XContentParseException ex = expectThrows(XContentParseException.class,
-                () -> DataDescription.CONFIG_PARSER.apply(parser, null));
+                () -> DataDescription.STRICT_PARSER.apply(parser, null));
         assertThat(ex.getMessage(), containsString("[data_description] failed to parse field [format]"));
         Throwable cause = ex.getCause();
         assertNotNull(cause);
@@ -216,7 +221,7 @@ public class DataDescriptionTests extends AbstractSerializingTestCase<DataDescri
         XContentParser parser = JsonXContent.jsonXContent
                 .createParser(NamedXContentRegistry.EMPTY, DeprecationHandler.THROW_UNSUPPORTED_OPERATION, json.streamInput());
         XContentParseException ex = expectThrows(XContentParseException.class,
-                () -> DataDescription.CONFIG_PARSER.apply(parser, null));
+                () -> DataDescription.STRICT_PARSER.apply(parser, null));
         assertThat(ex.getMessage(), containsString("[data_description] failed to parse field [field_delimiter]"));
         Throwable cause = ex.getCause();
         assertNotNull(cause);
@@ -230,7 +235,7 @@ public class DataDescriptionTests extends AbstractSerializingTestCase<DataDescri
         XContentParser parser = JsonXContent.jsonXContent
                 .createParser(NamedXContentRegistry.EMPTY, DeprecationHandler.THROW_UNSUPPORTED_OPERATION, json.streamInput());
         XContentParseException ex = expectThrows(XContentParseException.class,
-                () -> DataDescription.CONFIG_PARSER.apply(parser, null));
+                () -> DataDescription.STRICT_PARSER.apply(parser, null));
         assertThat(ex.getMessage(), containsString("[data_description] failed to parse field [quote_character]"));
         Throwable cause = ex.getCause();
         assertNotNull(cause);
@@ -274,9 +279,10 @@ public class DataDescriptionTests extends AbstractSerializingTestCase<DataDescri
 
     @Override
     protected DataDescription doParseInstance(XContentParser parser) {
-        return DataDescription.CONFIG_PARSER.apply(parser, null).build();
+        return DataDescription.STRICT_PARSER.apply(parser, null).build();
     }
 
+    @Override
     protected DataDescription mutateInstance(DataDescription instance) throws java.io.IOException {
         DataFormat format = instance.getFormat();
         String timeField = instance.getTimeField();
@@ -315,5 +321,5 @@ public class DataDescriptionTests extends AbstractSerializingTestCase<DataDescri
             throw new AssertionError("Illegal randomisation branch");
         }
         return new DataDescription(format, timeField, timeFormat, delimiter, quoteChar);
-    };
+    }
 }

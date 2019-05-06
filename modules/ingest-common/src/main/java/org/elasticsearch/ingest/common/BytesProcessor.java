@@ -27,7 +27,7 @@ import java.util.Map;
  * Processor that converts the content of string fields to the byte value.
  * Throws exception is the field is not of type string or can not convert to the numeric byte value
  */
-public final class BytesProcessor extends AbstractStringProcessor {
+public final class BytesProcessor extends AbstractStringProcessor<Long> {
 
     public static final String TYPE = "bytes";
 
@@ -35,9 +35,13 @@ public final class BytesProcessor extends AbstractStringProcessor {
         super(processorTag, field, ignoreMissing, targetField);
     }
 
+    public static long apply(String value) {
+        return ByteSizeValue.parseBytesSizeValue(value, null, "Ingest Field").getBytes();
+    }
+
     @Override
     protected Long process(String value) {
-        return ByteSizeValue.parseBytesSizeValue(value, null, getField()).getBytes();
+        return apply(value);
     }
 
     @Override

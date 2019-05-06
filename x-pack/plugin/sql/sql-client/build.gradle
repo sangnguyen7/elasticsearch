@@ -18,15 +18,12 @@ dependencyLicenses {
     mapping from: /sql-proto.*/, to: 'elasticsearch'
     mapping from: /elasticsearch-cli.*/, to: 'elasticsearch'
     mapping from: /elasticsearch-core.*/, to: 'elasticsearch'
-    mapping from: /lucene-.*/, to: 'lucene'
-    ignoreSha 'sql-action'
-    ignoreSha 'elasticsearch'
     ignoreSha 'elasticsearch-core'
 }
 
 forbiddenApisMain {
     // does not depend on core, so only jdk and http signatures should be checked
-    signaturesURLs = [this.class.getResource('/forbidden/jdk-signatures.txt')]
+    replaceSignatureFiles 'jdk-signatures'
 }
 
 forbiddenApisTest {

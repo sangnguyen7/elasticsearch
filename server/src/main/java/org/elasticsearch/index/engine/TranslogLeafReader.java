@@ -54,13 +54,13 @@ final class TranslogLeafReader extends LeafReader {
     private final Translog.Index operation;
     private static final FieldInfo FAKE_SOURCE_FIELD
         = new FieldInfo(SourceFieldMapper.NAME, 1, false, false, false, IndexOptions.NONE, DocValuesType.NONE, -1, Collections.emptyMap(),
-        0, 0, false);
+        0, 0, 0, false);
     private static final FieldInfo FAKE_ROUTING_FIELD
         = new FieldInfo(RoutingFieldMapper.NAME, 2, false, false, false, IndexOptions.NONE, DocValuesType.NONE, -1, Collections.emptyMap(),
-        0, 0, false);
+        0, 0, 0, false);
     private static final FieldInfo FAKE_ID_FIELD
         = new FieldInfo(IdFieldMapper.NAME, 3, false, false, false, IndexOptions.NONE, DocValuesType.NONE, -1, Collections.emptyMap(),
-        0, 0, false);
+        0, 0, 0, false);
     private final Version indexVersionCreated;
 
     TranslogLeafReader(Translog.Index operation, Version indexVersionCreated) {
@@ -161,14 +161,9 @@ final class TranslogLeafReader extends LeafReader {
             visitor.stringField(FAKE_ROUTING_FIELD, operation.routing().getBytes(StandardCharsets.UTF_8));
         }
         if (visitor.needsField(FAKE_ID_FIELD) == StoredFieldVisitor.Status.YES) {
-            final byte[] id;
-            if (indexVersionCreated.onOrAfter(Version.V_6_0_0)) {
-                BytesRef bytesRef = Uid.encodeId(operation.id());
-                id = new byte[bytesRef.length];
-                System.arraycopy(bytesRef.bytes, bytesRef.offset, id, 0, bytesRef.length);
-            } else { // TODO this can go away in 7.0 after backport
-                id = operation.id().getBytes(StandardCharsets.UTF_8);
-            }
+            BytesRef bytesRef = Uid.encodeId(operation.id());
+            final byte[] id = new byte[bytesRef.length];
+            System.arraycopy(bytesRef.bytes, bytesRef.offset, id, 0, bytesRef.length);
             visitor.stringField(FAKE_ID_FIELD, id);
         }
     }

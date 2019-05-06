@@ -34,12 +34,12 @@ import com.microsoft.azure.storage.blob.CloudBlobContainer;
 import com.microsoft.azure.storage.blob.CloudBlockBlob;
 import com.microsoft.azure.storage.blob.DeleteSnapshotsOption;
 import com.microsoft.azure.storage.blob.ListBlobItem;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.elasticsearch.common.blobstore.BlobMetaData;
 import org.elasticsearch.common.blobstore.support.PlainBlobMetaData;
-import org.elasticsearch.common.collect.MapBuilder;
 import org.elasticsearch.common.collect.Tuple;
-import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.settings.SettingsException;
 import org.elasticsearch.common.unit.ByteSizeUnit;
@@ -53,21 +53,26 @@ import java.net.URISyntaxException;
 import java.nio.file.FileAlreadyExistsException;
 import java.security.InvalidKeyException;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Supplier;
 
 import static java.util.Collections.emptyMap;
 
-public class AzureStorageService extends AbstractComponent {
+public class AzureStorageService {
+    
+    private static final Logger logger = LogManager.getLogger(AzureStorageService.class);
 
     public static final ByteSizeValue MIN_CHUNK_SIZE = new ByteSizeValue(1, ByteSizeUnit.BYTES);
-    public static final ByteSizeValue MAX_CHUNK_SIZE = new ByteSizeValue(64, ByteSizeUnit.MB);
+    /**
+     * {@link com.microsoft.azure.storage.blob.BlobConstants#MAX_SINGLE_UPLOAD_BLOB_SIZE_IN_BYTES}
+     */
+    public static final ByteSizeValue MAX_CHUNK_SIZE = new ByteSizeValue(256, ByteSizeUnit.MB);
 
     // 'package' for testing
     volatile Map<String, AzureStorageSettings> storageSettings = emptyMap();
 
     public AzureStorageService(Settings settings) {
-        super(settings);
         // eagerly load client settings so that secure settings are read
         final Map<String, AzureStorageSettings> clientsSettings = AzureStorageSettings.load(settings);
         refreshAndClearCache(clientsSettings);
@@ -130,7 +135,7 @@ public class AzureStorageService extends AbstractComponent {
      */
     public Map<String, AzureStorageSettings> refreshAndClearCache(Map<String, AzureStorageSettings> clientsSettings) {
         final Map<String, AzureStorageSettings> prevSettings = this.storageSettings;
-        this.storageSettings = MapBuilder.newMapBuilder(clientsSettings).immutableMap();
+        this.storageSettings = Map.copyOf(clientsSettings);
         // clients are built lazily by {@link client(String)}
         return prevSettings;
     }
@@ -214,7 +219,7 @@ public class AzureStorageService extends AbstractComponent {
         // NOTE: this should be here: if (prefix == null) prefix = "";
         // however, this is really inefficient since deleteBlobsByPrefix enumerates everything and
         // then does a prefix match on the result; it should just call listBlobsByPrefix with the prefix!
-        final MapBuilder<String, BlobMetaData> blobsBuilder = MapBuilder.newMapBuilder();
+        final var blobsBuilder = new HashMap<String, BlobMetaData>();
         final EnumSet<BlobListingDetails> enumBlobListingDetails = EnumSet.of(BlobListingDetails.METADATA);
         final Tuple<CloudBlobClient, Supplier<OperationContext>> client = client(account);
         final CloudBlobContainer blobContainer = client.v1().getContainerReference(container);
@@ -233,7 +238,7 @@ public class AzureStorageService extends AbstractComponent {
                 blobsBuilder.put(name, new PlainBlobMetaData(name, properties.getLength()));
             }
         });
-        return blobsBuilder.immutableMap();
+        return Map.copyOf(blobsBuilder);
     }
 
     public void writeBlob(String account, String container, String blobName, InputStream inputStream, long blobSize,

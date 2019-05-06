@@ -24,7 +24,6 @@ import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.common.blobstore.BlobContainer;
 import org.elasticsearch.common.blobstore.BlobPath;
 import org.elasticsearch.common.blobstore.BlobStore;
-import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeUnit;
 import org.elasticsearch.common.unit.ByteSizeValue;
@@ -33,7 +32,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-public class FsBlobStore extends AbstractComponent implements BlobStore {
+public class FsBlobStore implements BlobStore {
 
     private final Path path;
 
@@ -41,14 +40,14 @@ public class FsBlobStore extends AbstractComponent implements BlobStore {
 
     private final boolean readOnly;
 
-    public FsBlobStore(Settings settings, Path path) throws IOException {
-        super(settings);
+    public FsBlobStore(Settings settings, Path path, boolean readonly) throws IOException {
         this.path = path;
-        this.readOnly = settings.getAsBoolean("readonly", false);
-        if (!this.readOnly) {
+        this.readOnly = readonly;
+        if (this.readOnly == false) {
             Files.createDirectories(path);
         }
-        this.bufferSizeInBytes = (int) settings.getAsBytesSize("repositories.fs.buffer_size", new ByteSizeValue(100, ByteSizeUnit.KB)).getBytes();
+        this.bufferSizeInBytes = (int) settings.getAsBytesSize("repositories.fs.buffer_size",
+            new ByteSizeValue(100, ByteSizeUnit.KB)).getBytes();
     }
 
     @Override
@@ -75,6 +74,11 @@ public class FsBlobStore extends AbstractComponent implements BlobStore {
 
     @Override
     public void delete(BlobPath path) throws IOException {
+        assert readOnly == false : "should not delete anything from a readonly repository: " + path;
+        //noinspection ConstantConditions in case assertions are disabled
+        if (readOnly) {
+            throw new ElasticsearchException("unexpectedly deleting [" + path + "] from a readonly repository");
+        }
         IOUtils.rm(buildPath(path));
     }
 
@@ -85,7 +89,7 @@ public class FsBlobStore extends AbstractComponent implements BlobStore {
 
     private synchronized Path buildAndCreate(BlobPath path) throws IOException {
         Path f = buildPath(path);
-        if (!readOnly) {
+        if (readOnly == false) {
             Files.createDirectories(f);
         }
         return f;

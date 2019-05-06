@@ -7,7 +7,7 @@
 package org.elasticsearch.xpack.core.ssl;
 
 import org.elasticsearch.common.hash.MessageDigests;
-import org.elasticsearch.xpack.core.security.authc.support.CharArrays;
+import org.elasticsearch.common.CharArrays;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -58,6 +58,7 @@ public class PemUtils {
     private static final String OPENSSL_EC_FOOTER = "-----END EC PRIVATE KEY-----";
     private static final String OPENSSL_EC_PARAMS_HEADER = "-----BEGIN EC PARAMETERS-----";
     private static final String OPENSSL_EC_PARAMS_FOOTER = "-----END EC PARAMETERS-----";
+    private static final String HEADER = "-----BEGIN";
 
     private PemUtils() {
         throw new IllegalStateException("Utility class should not be instantiated");
@@ -74,6 +75,9 @@ public class PemUtils {
     public static PrivateKey readPrivateKey(Path keyPath, Supplier<char[]> passwordSupplier) {
         try (BufferedReader bReader = Files.newBufferedReader(keyPath, StandardCharsets.UTF_8)) {
             String line = bReader.readLine();
+            while (null != line && line.startsWith(HEADER) == false){
+                line = bReader.readLine();
+            }
             if (null == line) {
                 throw new IllegalStateException("Error parsing Private Key from: " + keyPath.toString() + ". File is empty");
             }
@@ -370,7 +374,7 @@ public class PemUtils {
      * defined in RFC 1423. RFC 1423 only defines DES-CBS and triple DES (EDE) in CBC mode. AES in CBC mode is also widely used though ( 3
      * different variants of 128, 192, 256 bit keys )
      *
-     * @param dekHeaderValue The value of the the DEK-Info PEM header
+     * @param dekHeaderValue The value of the DEK-Info PEM header
      * @param password       The password with which the key is encrypted
      * @return a cipher of the appropriate algorithm and parameters to be used for decryption
      * @throws GeneralSecurityException if the algorithm is not available in the used security provider, or if the key is inappropriate

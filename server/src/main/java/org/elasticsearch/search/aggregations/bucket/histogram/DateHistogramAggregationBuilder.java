@@ -23,12 +23,11 @@ import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.search.DocIdSetIterator;
+import org.elasticsearch.common.Rounding;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
-import org.elasticsearch.common.joda.DateMathParser;
-import org.elasticsearch.common.joda.Joda;
-import org.elasticsearch.common.rounding.DateTimeUnit;
-import org.elasticsearch.common.rounding.Rounding;
+import org.elasticsearch.common.time.DateFormatter;
+import org.elasticsearch.common.time.DateMathParser;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.xcontent.ObjectParser;
 import org.elasticsearch.common.xcontent.XContentBuilder;
@@ -54,48 +53,44 @@ import org.elasticsearch.search.aggregations.support.ValuesSourceConfig;
 import org.elasticsearch.search.aggregations.support.ValuesSourceParserHelper;
 import org.elasticsearch.search.aggregations.support.ValuesSourceType;
 import org.elasticsearch.search.internal.SearchContext;
-import org.joda.time.DateTimeField;
-import org.joda.time.DateTimeZone;
 
 import java.io.IOException;
-import java.util.HashMap;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.zone.ZoneOffsetTransition;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
-import static java.util.Collections.unmodifiableMap;
+import static java.util.Map.entry;
 
 /**
  * A builder for histograms on date fields.
  */
 public class DateHistogramAggregationBuilder extends ValuesSourceAggregationBuilder<ValuesSource.Numeric, DateHistogramAggregationBuilder>
         implements MultiBucketAggregationBuilder {
+
     public static final String NAME = "date_histogram";
-    private static DateMathParser EPOCH_MILLIS_PARSER = new DateMathParser(Joda.forPattern("epoch_millis", Locale.ROOT));
+    private static DateMathParser EPOCH_MILLIS_PARSER = DateFormatter.forPattern("epoch_millis").toDateMathParser();
 
-    public static final Map<String, DateTimeUnit> DATE_FIELD_UNITS;
-
-    static {
-        Map<String, DateTimeUnit> dateFieldUnits = new HashMap<>();
-        dateFieldUnits.put("year", DateTimeUnit.YEAR_OF_CENTURY);
-        dateFieldUnits.put("1y", DateTimeUnit.YEAR_OF_CENTURY);
-        dateFieldUnits.put("quarter", DateTimeUnit.QUARTER);
-        dateFieldUnits.put("1q", DateTimeUnit.QUARTER);
-        dateFieldUnits.put("month", DateTimeUnit.MONTH_OF_YEAR);
-        dateFieldUnits.put("1M", DateTimeUnit.MONTH_OF_YEAR);
-        dateFieldUnits.put("week", DateTimeUnit.WEEK_OF_WEEKYEAR);
-        dateFieldUnits.put("1w", DateTimeUnit.WEEK_OF_WEEKYEAR);
-        dateFieldUnits.put("day", DateTimeUnit.DAY_OF_MONTH);
-        dateFieldUnits.put("1d", DateTimeUnit.DAY_OF_MONTH);
-        dateFieldUnits.put("hour", DateTimeUnit.HOUR_OF_DAY);
-        dateFieldUnits.put("1h", DateTimeUnit.HOUR_OF_DAY);
-        dateFieldUnits.put("minute", DateTimeUnit.MINUTES_OF_HOUR);
-        dateFieldUnits.put("1m", DateTimeUnit.MINUTES_OF_HOUR);
-        dateFieldUnits.put("second", DateTimeUnit.SECOND_OF_MINUTE);
-        dateFieldUnits.put("1s", DateTimeUnit.SECOND_OF_MINUTE);
-        DATE_FIELD_UNITS = unmodifiableMap(dateFieldUnits);
-    }
+    public static final Map<String, Rounding.DateTimeUnit> DATE_FIELD_UNITS = Map.ofEntries(
+            entry("year", Rounding.DateTimeUnit.YEAR_OF_CENTURY),
+            entry("1y", Rounding.DateTimeUnit.YEAR_OF_CENTURY),
+            entry("quarter", Rounding.DateTimeUnit.QUARTER_OF_YEAR),
+            entry("1q", Rounding.DateTimeUnit.QUARTER_OF_YEAR),
+            entry("month", Rounding.DateTimeUnit.MONTH_OF_YEAR),
+            entry("1M", Rounding.DateTimeUnit.MONTH_OF_YEAR),
+            entry("week", Rounding.DateTimeUnit.WEEK_OF_WEEKYEAR),
+            entry("1w", Rounding.DateTimeUnit.WEEK_OF_WEEKYEAR),
+            entry("day", Rounding.DateTimeUnit.DAY_OF_MONTH),
+            entry("1d", Rounding.DateTimeUnit.DAY_OF_MONTH),
+            entry("hour", Rounding.DateTimeUnit.HOUR_OF_DAY),
+            entry("1h", Rounding.DateTimeUnit.HOUR_OF_DAY),
+            entry("minute", Rounding.DateTimeUnit.MINUTES_OF_HOUR),
+            entry("1m", Rounding.DateTimeUnit.MINUTES_OF_HOUR),
+            entry("second", Rounding.DateTimeUnit.SECOND_OF_MINUTE),
+            entry("1s", Rounding.DateTimeUnit.SECOND_OF_MINUTE));
 
     private static final ObjectParser<DateHistogramAggregationBuilder, Void> PARSER;
     static {
@@ -172,7 +167,7 @@ public class DateHistogramAggregationBuilder extends ValuesSourceAggregationBuil
     /** Read from a stream, for internal use only. */
     public DateHistogramAggregationBuilder(StreamInput in) throws IOException {
         super(in, ValuesSourceType.NUMERIC, ValueType.DATE);
-        order = InternalOrder.Streams.readHistogramOrder(in, true);
+        order = InternalOrder.Streams.readHistogramOrder(in);
         keyed = in.readBoolean();
         minDocCount = in.readVLong();
         interval = in.readLong();
@@ -183,7 +178,7 @@ public class DateHistogramAggregationBuilder extends ValuesSourceAggregationBuil
 
     @Override
     protected void innerWriteTo(StreamOutput out) throws IOException {
-        InternalOrder.Streams.writeHistogramOrder(order, out, true);
+        InternalOrder.Streams.writeHistogramOrder(order, out);
         out.writeBoolean(keyed);
         out.writeVLong(minDocCount);
         out.writeLong(interval);
@@ -370,11 +365,11 @@ public class DateHistogramAggregationBuilder extends ValuesSourceAggregationBuil
      * coordinating node in order to generate missing buckets, which may cross a transition
      * even though data on the shards doesn't.
      */
-    DateTimeZone rewriteTimeZone(QueryShardContext context) throws IOException {
-        final DateTimeZone tz = timeZone();
+    ZoneId rewriteTimeZone(QueryShardContext context) throws IOException {
+        final ZoneId tz = timeZone();
         if (field() != null &&
                 tz != null &&
-                tz.isFixed() == false &&
+                tz.getRules().isFixedOffset() == false &&
                 field() != null &&
                 script() == null) {
             final MappedFieldType ft = context.fieldMapper(field());
@@ -392,16 +387,29 @@ public class DateHistogramAggregationBuilder extends ValuesSourceAggregationBuil
                 }
 
                 if (anyInstant != null) {
-                    final long prevTransition = tz.previousTransition(anyInstant);
-                    final long nextTransition = tz.nextTransition(anyInstant);
+                    Instant instant = Instant.ofEpochMilli(anyInstant);
+                    ZoneOffsetTransition prevOffsetTransition = tz.getRules().previousTransition(instant);
+                    final long prevTransition;
+                    if (prevOffsetTransition  != null) {
+                        prevTransition = prevOffsetTransition.getInstant().toEpochMilli();
+                    } else {
+                        prevTransition = instant.toEpochMilli();
+                    }
+                    ZoneOffsetTransition nextOffsetTransition = tz.getRules().nextTransition(instant);
+                    final long nextTransition;
+                    if (nextOffsetTransition != null) {
+                        nextTransition = nextOffsetTransition.getInstant().toEpochMilli();
+                    } else {
+                        nextTransition = instant.toEpochMilli();
+                    }
 
                     // We need all not only values but also rounded values to be within
                     // [prevTransition, nextTransition].
                     final long low;
-                    DateTimeUnit intervalAsUnit = getIntervalAsDateTimeUnit();
+                    Rounding.DateTimeUnit intervalAsUnit = getIntervalAsDateTimeUnit();
                     if (intervalAsUnit != null) {
-                        final DateTimeField dateTimeField = intervalAsUnit.field(tz);
-                        low = dateTimeField.roundCeiling(prevTransition);
+                        Rounding rounding = Rounding.builder(intervalAsUnit).timeZone(timeZone()).build();
+                        low = rounding.nextRoundingValue(prevTransition);
                     } else {
                         final TimeValue intervalAsMillis = getIntervalAsTimeValue();
                         low = Math.addExact(prevTransition, intervalAsMillis.millis());
@@ -409,12 +417,12 @@ public class DateHistogramAggregationBuilder extends ValuesSourceAggregationBuil
                     // rounding rounds down, so 'nextTransition' is a good upper bound
                     final long high = nextTransition;
 
-                    if (ft.isFieldWithinQuery(reader, low, high, true, false, DateTimeZone.UTC, EPOCH_MILLIS_PARSER,
+                    if (ft.isFieldWithinQuery(reader, low, high, true, false, ZoneOffset.UTC, EPOCH_MILLIS_PARSER,
                             context) == Relation.WITHIN) {
                         // All values in this reader have the same offset despite daylight saving times.
                         // This is very common for location-based timezones such as Europe/Paris in
                         // combination with time-based indices.
-                        return DateTimeZone.forOffsetMillis(tz.getOffset(anyInstant));
+                        return ZoneOffset.ofTotalSeconds(tz.getRules().getOffset(instant).getTotalSeconds());
                     }
                 }
             }
@@ -425,9 +433,9 @@ public class DateHistogramAggregationBuilder extends ValuesSourceAggregationBuil
     @Override
     protected ValuesSourceAggregatorFactory<Numeric, ?> innerBuild(SearchContext context, ValuesSourceConfig<Numeric> config,
             AggregatorFactory<?> parent, Builder subFactoriesBuilder) throws IOException {
-        final DateTimeZone tz = timeZone();
+        final ZoneId tz = timeZone();
         final Rounding rounding = createRounding(tz);
-        final DateTimeZone rewrittenTimeZone = rewriteTimeZone(context.getQueryShardContext());
+        final ZoneId rewrittenTimeZone = rewriteTimeZone(context.getQueryShardContext());
         final Rounding shardRounding;
         if (tz == rewrittenTimeZone) {
             shardRounding = rounding;
@@ -448,7 +456,7 @@ public class DateHistogramAggregationBuilder extends ValuesSourceAggregationBuil
      *  {@code null} then it means that the interval is expressed as a fixed
      *  {@link TimeValue} and may be accessed via
      *  {@link #getIntervalAsTimeValue()}. */
-    private DateTimeUnit getIntervalAsDateTimeUnit() {
+    private Rounding.DateTimeUnit getIntervalAsDateTimeUnit() {
         if (dateHistogramInterval != null) {
             return DATE_FIELD_UNITS.get(dateHistogramInterval.toString());
         }
@@ -467,9 +475,9 @@ public class DateHistogramAggregationBuilder extends ValuesSourceAggregationBuil
         }
     }
 
-    private Rounding createRounding(DateTimeZone timeZone) {
+    private Rounding createRounding(ZoneId timeZone) {
         Rounding.Builder tzRoundingBuilder;
-        DateTimeUnit intervalAsUnit = getIntervalAsDateTimeUnit();
+        Rounding.DateTimeUnit intervalAsUnit = getIntervalAsDateTimeUnit();
         if (intervalAsUnit != null) {
             tzRoundingBuilder = Rounding.builder(intervalAsUnit);
         } else {

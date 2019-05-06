@@ -46,12 +46,6 @@ Vagrant.configure(2) do |config|
   PROJECT_DIR = ENV['VAGRANT_PROJECT_DIR'] || Dir.pwd
   config.vm.synced_folder PROJECT_DIR, '/project'
 
-  'ubuntu-1404'.tap do |box|
-    config.vm.define box, define_opts do |config|
-      config.vm.box = 'elastic/ubuntu-14.04-x86_64'
-      deb_common config, box
-    end
-  end
   'ubuntu-1604'.tap do |box|
     config.vm.define box, define_opts do |config|
       config.vm.box = 'elastic/ubuntu-16.04-x86_64'
@@ -61,9 +55,15 @@ Vagrant.configure(2) do |config|
       SHELL
     end
   end
-  # Wheezy's backports don't contain Openjdk 8 and the backflips
-  # required to get the sun jdk on there just aren't worth it. We have
-  # jessie and stretch for testing debian and it works fine.
+  'ubuntu-1804'.tap do |box|
+    config.vm.define box, define_opts do |config|
+      config.vm.box = 'elastic/ubuntu-18.04-x86_64'
+      deb_common config, box, extra: <<-SHELL
+       # Install Jayatana so we can work around it being present.
+       [ -f /usr/share/java/jayatanaag.jar ] || install jayatana
+      SHELL
+    end
+  end
   'debian-8'.tap do |box|
     config.vm.define box, define_opts do |config|
       config.vm.box = 'elastic/debian-8-x86_64'
@@ -100,13 +100,13 @@ Vagrant.configure(2) do |config|
       rpm_common config, box
     end
   end
-  'fedora-27'.tap do |box|
+  'fedora-28'.tap do |box|
     config.vm.define box, define_opts do |config|
-      config.vm.box = 'elastic/fedora-27-x86_64'
+      config.vm.box = 'elastic/fedora-28-x86_64'
       dnf_common config, box
     end
   end
-  'fedora-28'.tap do |box|
+  'fedora-29'.tap do |box|
     config.vm.define box, define_opts do |config|
       config.vm.box = 'elastic/fedora-28-x86_64'
       dnf_common config, box
@@ -122,6 +122,12 @@ Vagrant.configure(2) do |config|
     config.vm.define box, define_opts do |config|
       config.vm.box = 'elastic/sles-12-x86_64'
       sles_common config, box
+    end
+  end
+  'rhel-8'.tap do |box|
+    config.vm.define box, define_opts do |config|
+      config.vm.box = 'elastic/rhel-8-x86_64'
+      rpm_common config, box
     end
   end
 
@@ -243,6 +249,10 @@ def linux_common(config,
     touch /is_vagrant_vm # for consistency between linux and windows
   SHELL
 
+  config.vm.provision 'jdk-11', type: 'shell', inline: <<-SHELL
+    curl -sSL https://download.oracle.com/java/GA/jdk11/9/GPL/openjdk-11.0.2_linux-x64_bin.tar.gz | tar xz -C /opt/
+  SHELL
+
   # This prevents leftovers from previous tests using the
   # same VM from messing up the current test
   config.vm.provision 'clean es installs in tmp', run: 'always', type: 'shell', inline: <<-SHELL
@@ -337,6 +347,13 @@ def sh_install_deps(config,
       echo "==> Java is not installed"
       return 1
     }
+    cat \<\<JAVA > /etc/profile.d/java_home.sh
+if [ -z "\\\$JAVA_HOME" ]; then
+  export JAVA_HOME=/opt/jdk-11.0.2
+fi
+export SYSTEM_JAVA_HOME=\\\$JAVA_HOME
+unset JAVA_HOME
+JAVA
     ensure tar
     ensure curl
     ensure unzip
@@ -373,6 +390,8 @@ Defaults   env_keep += "BATS_UTILS"
 Defaults   env_keep += "BATS_TESTS"
 Defaults   env_keep += "PACKAGING_ARCHIVES"
 Defaults   env_keep += "PACKAGING_TESTS"
+Defaults   env_keep += "JAVA_HOME"
+Defaults   env_keep += "SYSTEM_JAVA_HOME"
 SUDOERS_VARS
     chmod 0440 /etc/sudoers.d/elasticsearch_vars
   SHELL
@@ -390,9 +409,17 @@ def windows_common(config, name)
     $ps_prompt | Out-File $PsHome/Microsoft.PowerShell_profile.ps1
   SHELL
 
+  config.vm.provision 'windows-jdk-11', type: 'shell', inline: <<-SHELL
+    New-Item -ItemType Directory -Force -Path "C:/java"
+    Invoke-WebRequest "https://download.oracle.com/java/GA/jdk11/9/GPL/openjdk-11.0.2_windows-x64_bin.zip" -OutFile "C:/java/jdk-11.zip"
+    Expand-Archive -Path "C:/java/jdk-11.zip" -DestinationPath "C:/java/"
+  SHELL
+
   config.vm.provision 'set env variables', type: 'shell', inline: <<-SHELL
     $ErrorActionPreference = "Stop"
     [Environment]::SetEnvironmentVariable("PACKAGING_ARCHIVES", "C:/project/build/packaging/archives", "Machine")
+    [Environment]::SetEnvironmentVariable("SYSTEM_JAVA_HOME", "C:\java\jdk-11.0.2", "Machine")
     [Environment]::SetEnvironmentVariable("PACKAGING_TESTS", "C:/project/build/packaging/tests", "Machine")
+    [Environment]::SetEnvironmentVariable("JAVA_HOME", $null, "Machine")
   SHELL
 end

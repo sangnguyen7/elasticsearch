@@ -27,6 +27,8 @@ import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.plugins.ReloadablePlugin;
 import org.elasticsearch.plugins.RepositoryPlugin;
 import org.elasticsearch.repositories.Repository;
+import org.elasticsearch.threadpool.ThreadPool;
+
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -38,20 +40,21 @@ public class GoogleCloudStoragePlugin extends Plugin implements RepositoryPlugin
     final GoogleCloudStorageService storageService;
 
     public GoogleCloudStoragePlugin(final Settings settings) {
-        this.storageService = createStorageService(settings);
+        this.storageService = createStorageService();
         // eagerly load client settings so that secure settings are readable (not closed)
         reload(settings);
     }
 
     // overridable for tests
-    protected GoogleCloudStorageService createStorageService(Settings settings) {
-        return new GoogleCloudStorageService(settings);
+    protected GoogleCloudStorageService createStorageService() {
+        return new GoogleCloudStorageService();
     }
 
     @Override
-    public Map<String, Repository.Factory> getRepositories(Environment env, NamedXContentRegistry namedXContentRegistry) {
+    public Map<String, Repository.Factory> getRepositories(Environment env, NamedXContentRegistry namedXContentRegistry,
+                                                           ThreadPool threadPool) {
         return Collections.singletonMap(GoogleCloudStorageRepository.TYPE,
-            (metadata) -> new GoogleCloudStorageRepository(metadata, env, namedXContentRegistry, this.storageService));
+            metadata -> new GoogleCloudStorageRepository(metadata, env, namedXContentRegistry, this.storageService, threadPool));
     }
 
     @Override
